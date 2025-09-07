@@ -1,0 +1,125 @@
+syntax = "proto3";
+
+package notes.v1;
+option go_package = "dovakin0007/notes";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/field_mask.proto";
+
+message ActorRef {
+  string id = 1;                       // required
+  optional string display_name = 2;    // snapshot
+  optional string avatar_url = 3;      // snapshot
+}
+
+message Note {
+  string id = 1;
+  optional string project_id = 2;
+  ActorRef author = 3;
+  string title = 4;
+  optional string content = 5;
+  bool is_pinned = 6;
+  repeated string tags = 7;
+  repeated NoteRevision revisions = 8;
+  repeated Attachment attachments = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+
+
+  reserved 100 to 119;
+}
+
+message NoteRevision {
+  string id = 1;
+  string title = 2;
+  string content = 3;
+  ActorRef editor = 4;
+  google.protobuf.Timestamp edited_at = 5;
+}
+
+message Attachment {
+  string id = 1;
+  string url = 2;
+  string file_name = 3;
+  string file_type = 4;
+  google.protobuf.Timestamp uploaded_at = 5;
+  optional string sha256 = 6;
+  optional int64 size_bytes = 7;
+}
+
+message GetNoteRequest {
+  string id = 1;
+  // Include heavy fields?
+  bool include_revisions = 2;
+  bool include_attachments = 3;
+}
+
+message ListNotesRequest {
+  optional string project_id = 1;
+  optional string user_id = 2;
+  optional string query = 3; 
+  optional string sort_by = 4;
+  optional bool   sort_desc = 5;
+  int32 page_size = 6;
+  string page_token = 7;
+}
+
+message CreateNoteRequest {
+  optional string project_id = 1;
+  string title = 2;
+  optional string content = 3;
+  bool is_pinned = 4;
+  repeated string tags = 5;
+  repeated Attachment attachments = 6;
+  ActorRef author = 7;
+  optional string idempotency_key = 8;
+}
+
+message UpdateNoteRequest {
+  string note_id = 1;
+  // New values (only those listed in update_mask are applied)
+  string title = 2;
+  string content = 3;
+  repeated string tags = 4;
+  bool is_pinned = 5;
+  repeated Attachment attachments = 6;
+  ActorRef user = 7;
+  google.protobuf.FieldMask update_mask = 8;
+  optional google.protobuf.Timestamp if_match_updated_at = 9;
+}
+
+message DeleteNoteRequest {
+  string note_id = 1;
+  optional bool hard_delete = 2;
+}
+
+message NoteResponse { Note note = 1; }
+
+message ListNotesResponse {
+  repeated Note notes = 1;
+  string next_page_token = 2;
+}
+
+
+message ListNoteRevisionsRequest {
+  string note_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+message ListNoteRevisionsResponse {
+  repeated NoteRevision revisions = 1;
+  string next_page_token = 2;
+}
+
+service NoteService {
+  rpc GetNote(GetNoteRequest) returns (NoteResponse);
+  // Try replacing with streaming
+  rpc ListNotes(ListNotesRequest) returns (ListNotesResponse);
+  rpc CreateNote(CreateNoteRequest) returns (NoteResponse);
+  rpc UpdateNote(UpdateNoteRequest) returns (NoteResponse);
+  rpc DeleteNote(DeleteNoteRequest) returns (DeleteNoteResponse);
+
+  // Optional explicit revisions endpoint
+  rpc ListNoteRevisions(ListNoteRevisionsRequest) returns (ListNoteRevisionsResponse);
+}
+
+message DeleteNoteResponse { bool success = 1; }
