@@ -1,0 +1,33 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go build cache & vendor
+/bin/
+/build/
+/dist/
+/vendor/
+/gen/
+
+
+.env
+db_password.txt
+
+*.log
+
+.vscode/
+.idea/
+
+# Docker artifacts
+docker-compose.override.yml
+*.pid
+
+notes/
+*.pb.go
+*.pb.gw.go
+*.swagger.json

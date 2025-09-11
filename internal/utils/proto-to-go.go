@@ -69,16 +69,24 @@ func attachmentsProtoToModel(in []*pb.Attachment, noteID string) []models.Attach
 		var uploaded time.Time
 		if a.GetUploadedAt() != nil {
 			uploaded = a.GetUploadedAt().AsTime()
+		} else {
+			uploaded = time.Now()
 		}
 
 		var shaPtr *string
 		if s := a.GetSha256(); s != "" {
 			shaPtr = &s
+		} else {
+			defaultSha := "unknown"
+			shaPtr = &defaultSha
 		}
 
 		var sizePtr *int64
 		if sz := a.GetSizeBytes(); sz != 0 {
 			sizePtr = &sz
+		} else {
+			defaultSize := int64(-1)
+			sizePtr = &defaultSize
 		}
 
 		out = append(out, models.Attachment{
@@ -196,11 +204,17 @@ func ProtoToActorModel(a *pb.ActorRef) models.Actor {
 	var displayName *string
 	if a.DisplayName != nil && *a.DisplayName != "" {
 		displayName = a.DisplayName
+	} else {
+		defaultName := "Unknown"
+		displayName = &defaultName
 	}
 
 	var avatarURL *string
 	if a.AvatarUrl != nil && *a.AvatarUrl != "" {
 		avatarURL = a.AvatarUrl
+	} else {
+		defaultAvatar := "NA"
+		avatarURL = &defaultAvatar
 	}
 
 	return models.Actor{

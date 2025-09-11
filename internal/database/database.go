@@ -103,7 +103,7 @@ CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag);
 
 type Database struct {
 	Mu *sync.RWMutex
-	db *sqlx.DB
+	Db *sqlx.DB
 }
 
 func GetDb() *Database {
@@ -116,36 +116,36 @@ func GetDb() *Database {
 func initDb() *Database {
 	connection_str := fmt.Sprintf("user=%s password=%s dbname=%s port=%s sslmode=disable", user, password, dbName, port)
 
-	db := &Database{
+	Db := &Database{
 		Mu: &sync.RWMutex{},
-		db: sqlx.MustConnect(driverName, connection_str),
+		Db: sqlx.MustConnect(driverName, connection_str),
 	}
 
-	db.migrate(context.Background())
-	return db
+	Db.migrate(context.Background())
+	return Db
 }
 
-func mustExecAll(ctx context.Context, db *sqlx.DB, sql string) {
-	if _, err := db.ExecContext(ctx, sql); err != nil {
+func mustExecAll(ctx context.Context, Db *sqlx.DB, sql string) {
+	if _, err := Db.ExecContext(ctx, sql); err != nil {
 		panic(fmt.Errorf("migration failed: %w", err))
 	}
 }
 
 func (d *Database) migrate(ctx context.Context) {
 
-	mustExecAll(ctx, d.db, ddl)
+	mustExecAll(ctx, d.Db, ddl)
 }
 
 func (d *Database) Close() error {
-	if d.db != nil {
-		return d.db.Close()
+	if d.Db != nil {
+		return d.Db.Close()
 	}
 	return nil
 }
 
 // For TESTING purposes only
 func ResetDb() {
-	if instance != nil && instance.db != nil {
+	if instance != nil && instance.Db != nil {
 		instance.Close()
 		instance = nil
 		once = sync.Once{}
@@ -164,14 +164,14 @@ func (d *Database) UpsertActor(ctx context.Context, actor models.Actor) error {
 	if err != nil {
 		return err
 	}
-	_, err = d.db.ExecContext(ctx, sqlStr, args...)
+	_, err = d.Db.ExecContext(ctx, sqlStr, args...)
 	return err
 }
 
 func (d *Database) CreateNote(ctx context.Context, in models.CreateNoteInput) (*models.Note, error) {
 	d.Mu.RLock()
 	defer d.Mu.RUnlock()
-	tx, err := d.db.BeginTxx(ctx, nil)
+	tx, err := d.Db.BeginTxx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -213,12 +213,15 @@ func (d *Database) CreateNote(ctx context.Context, in models.CreateNoteInput) (*
 		if sql_err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, query, args); err != nil {
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 			return nil, err
 		}
 	}
-	InsertAttachment(ctx, tx, in.Attachment)
+	err = InsertAttachment(ctx, tx, in.Attachment)
 
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -239,7 +242,7 @@ func (d *Database) ViewNote(ctx context.Context, noteID string, opts models.GetN
           FROM note_tags
           WHERE note_id = $1
           GROUP BY note_id
-        ) t ON t.note_id = n.id`).
+        ) t ON t. = n.id`).
 		Where(sq.Eq{"n.id": noteID})
 	if opts.IncludeRevisions {
 		q = q.LeftJoin(`
@@ -268,12 +271,12 @@ func (d *Database) ViewNote(ctx context.Context, noteID string, opts models.GetN
 
 	type row struct {
 		models.Note
-		AuthorID_       string  `db:"author.id"`
-		AuthorName      *string `db:"author.display_name"`
-		AuthorAvatarURL *string `db:"author.avatar_url"`
+		AuthorID_       string  `Db:"author.id"`
+		AuthorName      *string `Db:"author.display_name"`
+		AuthorAvatarURL *string `Db:"author.avatar_url"`
 	}
 	var rw row
-	if err := d.db.GetContext(ctx, &rw, query, args...); err != nil {
+	if err := d.Db.GetContext(ctx, &rw, query, args...); err != nil {
 		return nil, err
 	}
 
@@ -346,9 +349,9 @@ func (d *Database) ListNotes(ctx context.Context, filter models.ListNotesFilter)
 	}
 	type row struct {
 		models.Note
-		AuthorID_       string  `db:"author.id"`
-		AuthorName      *string `db:"author.display_name"`
-		AuthorAvatarURL *string `db:"author.avatar_url"`
+		AuthorID        string  `db:"author_id"` // if you already have author_id in models.Note, drop this
+		AuthorName      *string `db:"author_display_name"`
+		AuthorAvatarURL *string `db:"author_avatar_url"`
 	}
 	var rows []row
 	sqlStr, args, err := q.ToSql()
@@ -366,7 +369,7 @@ func (d *Database) ListNotes(ctx context.Context, filter models.ListNotesFilter)
 		}
 	}
 
-	if err := d.db.SelectContext(ctx, &rows, sqlStr, args...); err != nil {
+	if err := d.Db.SelectContext(ctx, &rows, sqlStr, args...); err != nil {
 		return nil, "", status.Errorf(codes.Internal, "query failed: %v", err)
 	}
 	notes := make([]models.Note, 0, len(rows))
@@ -384,7 +387,7 @@ func (d *Database) ListNotes(ctx context.Context, filter models.ListNotesFilter)
 	}
 	for _, row := range rows {
 		n := row.Note
-		n.Author = &models.Actor{ID: row.AuthorID_, DisplayName: row.AuthorName, AvatarURL: row.AuthorAvatarURL}
+		n.Author = &models.Actor{ID: row.AuthorID, DisplayName: row.AuthorName, AvatarURL: row.AuthorAvatarURL}
 		notes = append(notes, n)
 	}
 
@@ -430,7 +433,7 @@ func (d *Database) ListNotes(ctx context.Context, filter models.ListNotesFilter)
 func (d *Database) UpdateNote(ctx context.Context, in models.UpdateNoteInput) (*models.Note, error) {
 	d.Mu.Lock()
 	defer d.Mu.Unlock()
-	tx, err := d.db.BeginTxx(ctx, &sql.TxOptions{})
+	tx, err := d.Db.BeginTxx(ctx, &sql.TxOptions{})
 	defer func() {
 		tx.Rollback()
 	}()
@@ -506,7 +509,7 @@ func (d *Database) UpdateNote(ctx context.Context, in models.UpdateNoteInput) (*
 func (d *Database) DeleteNote(ctx context.Context, id string, hardDel bool) (bool, error) {
 	d.Mu.Lock()
 	defer d.Mu.Unlock()
-	tx, err := d.db.BeginTxx(ctx, &sql.TxOptions{})
+	tx, err := d.Db.BeginTxx(ctx, &sql.TxOptions{})
 	defer func() {
 		tx.Rollback()
 	}()
@@ -565,10 +568,13 @@ func InsertAttachment(ctx context.Context, tx *sqlx.Tx, attachment []models.Atta
 				Suffix(`ON CONFLICT (id) DO UPDATE SET 
                     url=EXCLUDED.url, file_name=EXCLUDED.file_name, file_type=EXCLUDED.file_type,
                     uploaded_at=EXCLUDED.uploaded_at, sha256=EXCLUDED.sha256, size_bytes=EXCLUDED.size_bytes`)
-			if query, args, err := q.ToSql(); err == nil {
-				tx.ExecContext(ctx, query, args...)
-			} else {
-				return err
+			query, args, err := q.ToSql()
+			if err != nil {
+				return fmt.Errorf("build attachments insert: %w", err)
+			}
+
+			if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+				return fmt.Errorf("exec attachments insert: %w", err)
 			}
 
 		}
