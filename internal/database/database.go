@@ -15,7 +15,7 @@ import (
 	"dovakin0007.com/notes-grpc/internal/utils"
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -233,36 +233,38 @@ func (d *Database) CreateNote(ctx context.Context, in models.CreateNoteInput) (*
 func (d *Database) ViewNote(ctx context.Context, noteID string, opts models.GetNoteOptions) (*models.Note, error) {
 	d.Mu.RLock()
 	defer d.Mu.RUnlock()
-	var q = psql.Select("n.id", "n.project_id", "n.author_id", "n.title", "n.content", "n.is_pinned", "n.created_at", "n.updated_at",
-		"a.id AS \"author.id\"", "a.display_name AS \"author.display_name\"", "a.avatar_url AS \"author.avatar_url\"",
-		"COALESCE(t.tags, '{}') AS tags").From("notes n").
+	q := psql.Select(
+		"n.id", "n.project_id", "n.author_id", "n.title", "n.content", "n.is_pinned", "n.created_at", "n.updated_at",
+		"a.id AS author_id", "a.display_name AS author_display_name", "a.avatar_url AS author_avatar_url",
+		"COALESCE(t.tags, '{}') AS tags",
+	).
+		From("notes n").
 		Join("actors a ON n.author_id = a.id").
 		LeftJoin(`(
-          SELECT note_id, ARRAY_AGG(tag ORDER BY tag) AS tags
-          FROM note_tags
-          WHERE note_id = $1
-          GROUP BY note_id
-        ) t ON t. = n.id`).
+			SELECT note_id, ARRAY_AGG(tag ORDER BY tag) AS tags
+			FROM note_tags
+			GROUP BY note_id
+		) t ON t.note_id = n.id`).
 		Where(sq.Eq{"n.id": noteID})
-	if opts.IncludeRevisions {
-		q = q.LeftJoin(`
-            SELECT r.id, r.note_id, r.title, r.content, r.editor_id, r.edited_at,
-                   e.id AS "editor.id", e.display_name AS "editor.display_name", e.avatar_url AS "editor.avatar_url"
-            FROM note_revisions r
-            JOIN actors e ON e.id = r.editor_id
-            WHERE r.note_id = $1
-            ORDER BY r.edited_at DESC, r.id DESC
-        `)
-	}
+	// if opts.IncludeRevisions {
+	// 	q = q.LeftJoin(`
+	//         SELECT r.id, r.note_id, r.title, r.content, r.editor_id, r.edited_at,
+	//                e.id AS "editor.id", e.display_name AS "editor.display_name", e.avatar_url AS "editor.avatar_url"
+	//         FROM note_revisions r
+	//         JOIN actors e ON e.id = r.editor_id
+	//         WHERE r.note_id = $1
+	//         ORDER BY r.edited_at DESC, r.id DESC
+	//     `)
+	// }
 
-	if opts.IncludeAttachments {
-		q = q.LeftJoin(`
-            SELECT a.id, a.note_id, a.url, a.file_name, a.file_type, a.uploaded_at, a.sha256, a.size_bytes
-            FROM attachments a
-            WHERE a.note_id = $1
-            ORDER BY a.uploaded_at DESC, a.id DESC
-        `)
-	}
+	// if opts.IncludeAttachments {
+	// 	q = q.LeftJoin(`
+	//         SELECT a.id, a.note_id, a.url, a.file_name, a.file_type, a.uploaded_at, a.sha256, a.size_bytes
+	//         FROM attachments a
+	//         WHERE a.note_id = $1
+	//         ORDER BY a.uploaded_at DESC, a.id DESC
+	//     `)
+	// }
 
 	query, args, sql_err := q.ToSql()
 	if sql_err != nil {
@@ -270,23 +272,61 @@ func (d *Database) ViewNote(ctx context.Context, noteID string, opts models.GetN
 	}
 
 	type row struct {
-		models.Note
-		AuthorID_       string  `Db:"author.id"`
-		AuthorName      *string `Db:"author.display_name"`
-		AuthorAvatarURL *string `Db:"author.avatar_url"`
+		ID              string         `db:"id"`
+		ProjectID       *string        `db:"project_id"`
+		AuthorID_       string         `db:"author_id"`
+		TitlePtr        *string        `db:"title"`   // scan into pointer then assign to non-pointer Title
+		ContentPtr      *string        `db:"content"` // models.Note.Content is *string, so keep pointer
+		IsPinned        bool           `db:"is_pinned"`
+		CreatedAt       sql.NullTime   `db:"created_at"`
+		UpdatedAt       sql.NullTime   `db:"updated_at"`
+		AuthorName      *string        `db:"author_display_name"`
+		AuthorAvatarURL *string        `db:"author_avatar_url"`
+		Tags            pq.StringArray `db:"tags"`
 	}
+
 	var rw row
 	if err := d.Db.GetContext(ctx, &rw, query, args...); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "note not found")
+		}
 		return nil, err
 	}
 
-	n := rw.Note
+	var n models.Note
+	n.ID = rw.ID
+	if rw.ProjectID != nil {
+		n.ProjectID = rw.ProjectID
+	}
+	if rw.TitlePtr != nil {
+		n.Title = *rw.TitlePtr
+	} else {
+		n.Title = ""
+	}
+	n.Content = rw.ContentPtr
+
+	n.AuthorID = rw.AuthorID_
+	n.IsPinned = rw.IsPinned
+	if rw.CreatedAt.Valid {
+		n.CreatedAt = rw.CreatedAt.Time
+	}
+	if rw.UpdatedAt.Valid {
+		n.UpdatedAt = rw.UpdatedAt.Time
+	}
+
 	n.Author = &models.Actor{
 		ID:          rw.AuthorID_,
 		DisplayName: rw.AuthorName,
 		AvatarURL:   rw.AuthorAvatarURL,
 	}
-	return &rw.Note, nil
+
+	if len(rw.Tags) > 0 {
+		n.Tags = []string(rw.Tags)
+	} else {
+		n.Tags = nil
+	}
+
+	return &n, nil
 
 }
 

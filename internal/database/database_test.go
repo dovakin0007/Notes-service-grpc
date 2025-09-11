@@ -17,7 +17,7 @@ import (
 
 func newMockDatabase(t *testing.T) (*database.Database, sqlmock.Sqlmock, func()) {
 	t.Helper()
-	dbsql, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	dbsql, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("failed to create sqlmock: %v", err)
 	}
@@ -66,25 +66,20 @@ func TestCreateNote_sqlmock(t *testing.T) {
 
 	mock.ExpectBegin()
 
-	// Expect upsert actor - any SQL containing INSERT INTO actors
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO actors")).
 		WithArgs(in.Author.ID, in.Author.DisplayName, in.Author.AvatarURL).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	// Expect insert into notes with RETURNING ... -> we must expect a Query (QueryRowContext)
-	// The query is created by squirrel; match by prefix "INSERT INTO notes"
 	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO notes")).
 		WithArgs(in.ID, in.ProjectID, in.Author.ID, in.Title, in.Content, false).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "project_id", "author_id", "title", "content", "is_pinned", "created_at", "updated_at",
 		}).AddRow(in.ID, in.ProjectID, in.Author.ID, in.Title, in.Content, false, now, now))
 
-	// Expect insert into note_tags (two values)
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO note_tags")).
 		WithArgs(in.ID, "tag1", in.ID, "tag2").
 		WillReturnResult(sqlmock.NewResult(1, 2))
 
-	// Expect insert into attachments
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO attachments")).
 		WithArgs("a1", in.ID, "http://u", "f", "txt", sqlmock.AnyArg(), nil, int64(0)). // depending on your struct zero-values
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -110,7 +105,7 @@ func TestListNotes_ListAll(t *testing.T) {
 	defer err()
 
 	filter := models.ListNotesFilter{
-		PageSize: 5,
+		PageSize: 15,
 		SortBy:   "updated_at",
 		SortDesc: true,
 	}
@@ -123,7 +118,7 @@ func TestListNotes_ListAll(t *testing.T) {
 	rows := sqlmock.NewRows(cols)
 	now := time.Now().UTC()
 
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 15; i++ {
 		id := "note-" + strconv.Itoa(i)
 		projectID := "proj-1"
 		authorID := "actor-" + strconv.Itoa(i)
@@ -150,16 +145,65 @@ func TestListNotes_ListAll(t *testing.T) {
 	}
 	require.NoError(t, err_1)
 
-	// Since filter.PageSize was < 10, the method enforces 10 -> expect 10 records
-	require.Len(t, notes, 10)
-
-	// Since we returned full page (10) and ListNotes calculates next token when len==PageSize,
-	// next should be non-empty.
+	require.Len(t, notes, 15)
 	require.NotEmpty(t, next)
 
 	// Check ordering: because SortDesc==true and query ordered by n.updated_at DESC, the first note
 	// should be >= second note in UpdatedAt.
 	require.True(t, !notes[0].UpdatedAt.Before(notes[1].UpdatedAt), "expected notes[0].UpdatedAt >= notes[1].UpdatedAt")
+
+	// ensure all expectations met
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestViewNote_Basic(t *testing.T) {
+	d, mock, cleanup := newMockDatabase(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	noteID := "note-123"
+	authorID := "actor-1"
+	authorName := "Alice"
+	avatarURL := "https://avatar/actor-1"
+
+	cols := []string{
+		"id", "project_id", "author_id", "title", "content", "is_pinned", "created_at", "updated_at",
+		"author_display_name", "author_avatar_url", "tags",
+	}
+
+	rows := sqlmock.NewRows(cols).AddRow(
+		noteID,
+		"proj-1",
+		authorID,
+		"My title",
+		"my content",
+		false,
+		now.Add(-time.Hour),
+		now,
+		authorName,
+		avatarURL,
+		"{tag1,tag2}",
+	)
+
+	queryRegex := `(?s)^SELECT .* FROM notes n .*LEFT JOIN .*note_tags.* ON t\.note_id = n\.id .*WHERE .*n\.id = .*`
+
+	mock.ExpectQuery(queryRegex).WillReturnRows(rows)
+
+	ctx := context.Background()
+	note, err := d.ViewNote(ctx, noteID, models.GetNoteOptions{
+		IncludeRevisions:   false,
+		IncludeAttachments: false,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, note)
+	require.Equal(t, noteID, note.ID)
+	require.Equal(t, "My title", note.Title)
+	require.Equal(t, ptrString("my content"), note.Content)
+	require.NotNil(t, note.Author)
+	require.Equal(t, authorID, note.Author.ID)
+	require.Equal(t, &authorName, note.Author.DisplayName)
+	require.Equal(t, &avatarURL, note.Author.AvatarURL)
+	require.ElementsMatch(t, []string{"tag1", "tag2"}, note.Tags)
 
 	// ensure all expectations met
 	require.NoError(t, mock.ExpectationsWereMet())
