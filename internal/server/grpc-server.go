@@ -20,6 +20,14 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+type Store interface {
+	CreateNote(ctx context.Context, in models.CreateNoteInput) (*models.Note, error)
+	UpdateNote(ctx context.Context, in models.UpdateNoteInput) (*models.Note, error)
+	ListNotes(ctx context.Context, in models.ListNotesFilter) ([]models.Note, string, error)
+	ViewNote(ctx context.Context, id string, opts models.GetNoteOptions) (*models.Note, error)
+	DeleteNote(ctx context.Context, id string, hard bool) (bool, error)
+}
+
 type GrpcServer struct {
 	Addr         string
 	grpcServer   *grpc.Server
@@ -29,12 +37,18 @@ type GrpcServer struct {
 type noteServiceServer struct {
 	pb.UnimplementedNoteServiceServer
 
-	db *database.Database
+	db database.Store
 }
 
-func newNoteServiceServer() *noteServiceServer {
+func NewNoteServiceServer() *noteServiceServer {
 	return &noteServiceServer{
 		db: database.GetDb(),
+	}
+}
+
+func NewNoteServiceServerWithStore(s database.Store) *noteServiceServer {
+	return &noteServiceServer{
+		db: s,
 	}
 }
 
@@ -153,7 +167,7 @@ func (g *GrpcServer) Run(in chan<- bool) {
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
-	pb.RegisterNoteServiceServer(g.grpcServer, newNoteServiceServer())
+	pb.RegisterNoteServiceServer(g.grpcServer, NewNoteServiceServer())
 
 	grpc_health_v1.RegisterHealthServer(g.grpcServer, g.healthServer)
 	g.healthServer.SetServingStatus("notes-grpc-service", grpc_health_v1.HealthCheckResponse_SERVING)

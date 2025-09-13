@@ -99,7 +99,6 @@ func TestCreateNote_sqlmock(t *testing.T) {
 	}
 }
 
-// TestListNotes_ListAll uses sqlmock to return multiple rows and verifies pagination token + ordering.
 func TestListNotes_ListAll(t *testing.T) {
 	db, mock, err := newMockDatabase(t)
 	defer err()
@@ -205,8 +204,118 @@ func TestViewNote_Basic(t *testing.T) {
 	require.Equal(t, &avatarURL, note.Author.AvatarURL)
 	require.ElementsMatch(t, []string{"tag1", "tag2"}, note.Tags)
 
-	// ensure all expectations met
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateNoteBasic(t *testing.T) {
+	d, mock, cleanup := newMockDatabase(t)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	noteID := "note-123"
+	authorID := "actor-1"
+	authorName := "Alice"
+	avatarURL := "https://avatar/actor-1"
+
+	in := models.UpdateNoteInput{
+		NoteID:   noteID,
+		Title:    ptrString("Updated title"),
+		Content:  ptrString("updated content"),
+		IsPinned: ptrBool(true),
+		Tags:     &[]string{"tag1", "tag2"},
+		Attachments: []models.Attachment{
+			{ID: "att-1", NoteID: noteID, URL: "https://files/att-1", FileName: "file.png", FileType: "image/png", UploadedAt: now, SHA256: ptrString("deadbeef"), SizeBytes: ptrInt64(1234)},
+		},
+	}
+	mock.ExpectBegin()
+
+	mock.ExpectQuery("UPDATE\\s+notes.*RETURNING\\s+id").WillReturnRows(
+		sqlmock.NewRows([]string{"id"}).AddRow(noteID),
+	)
+
+	// Expect tags delete
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM note_tags WHERE note_id=$1")).
+		WithArgs(noteID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectExec("INSERT\\s+INTO\\s+note_tags").
+		WillReturnResult(sqlmock.NewResult(1, 2))
+
+	mock.ExpectExec("INSERT\\s+INTO\\s+attachments").
+		WithArgs("att-1", noteID, "https://files/att-1", "file.png", "image/png", now, "deadbeef", int64(1234)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	mock.ExpectCommit()
+
+	cols := []string{
+		"id", "project_id", "author_id", "title", "content", "is_pinned", "created_at", "updated_at",
+		"author_display_name", "author_avatar_url", "tags",
+	}
+	rows := sqlmock.NewRows(cols).AddRow(
+		noteID,
+		"proj-1",
+		authorID,
+		"Updated title",
+		"updated content",
+		true,
+		now.Add(-time.Hour),
+		now,
+		authorName,
+		avatarURL,
+		"{tag1,tag2}",
+	)
+
+	queryRegex := `(?s)^SELECT .* FROM notes n .*JOIN .*actors.* ON n\.author_id = a\.id .*LEFT JOIN .*note_tags.* ON .* WHERE n\.id = \$1`
+	mock.ExpectQuery(queryRegex).WithArgs(noteID).WillReturnRows(rows)
+	ctx := context.Background()
+
+	note, err := d.UpdateNote(ctx, in)
+	require.NoError(t, err)
+	require.NotNil(t, note)
+	require.Equal(t, noteID, note.ID)
+	require.Equal(t, "Updated title", note.Title)
+	require.ElementsMatch(t, []string{"tag1", "tag2"}, note.Tags)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDeleteNote_Success(t *testing.T) {
+	d, mock, cleanup := newMockDatabase(t)
+	defer cleanup()
+
+	noteID := "note-123"
+
+	mock.ExpectBegin()
+	var note_delete string = regexp.MustCompile(`DELETE\s+FROM\s+note_tags\s+WHERE\s+note_id\s*=\s*\$1`).String()
+	mock.ExpectExec(note_delete).
+		WithArgs(noteID).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	mock.ExpectExec(regexp.MustCompile(`DELETE\s+FROM\s+attachments\s+WHERE\s+note_id\s*=\s*\$1`).String()).
+		WithArgs(noteID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectExec(regexp.MustCompile(`DELETE\s+FROM\s+note_revisions\s+WHERE\s+note_id\s*=\s*\$1`).String()).
+		WithArgs(noteID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	mock.ExpectExec(regexp.MustCompile(`DELETE\s+FROM\s+notes\s+WHERE\s+id\s*=\s*\$1`).String()).
+		WithArgs(noteID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectCommit()
+
+	ok, err := d.DeleteNote(context.Background(), noteID, true)
+	require.NoError(t, err)
+	require.True(t, ok)
+
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func ptrString(s string) *string { return &s }
+
+func ptrBool(b bool) *bool { return &b }
+
+func ptrInt64(i int64) *int64 {
+	return &i
+}

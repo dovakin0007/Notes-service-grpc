@@ -32,6 +32,14 @@ var (
 	port       = os.Getenv("POSTGRES_PORT")
 )
 
+type Store interface {
+	CreateNote(ctx context.Context, in models.CreateNoteInput) (*models.Note, error)
+	UpdateNote(ctx context.Context, in models.UpdateNoteInput) (*models.Note, error)
+	ListNotes(ctx context.Context, in models.ListNotesFilter) ([]models.Note, string, error)
+	ViewNote(ctx context.Context, id string, opts models.GetNoteOptions) (*models.Note, error)
+	DeleteNote(ctx context.Context, id string, hard bool) (bool, error)
+}
+
 const ddl = `
 -- 1) Basic reference table for ActorRef
 CREATE TABLE IF NOT EXISTS actors (
@@ -472,7 +480,6 @@ func (d *Database) ListNotes(ctx context.Context, filter models.ListNotesFilter)
 
 func (d *Database) UpdateNote(ctx context.Context, in models.UpdateNoteInput) (*models.Note, error) {
 	d.Mu.Lock()
-	defer d.Mu.Unlock()
 	tx, err := d.Db.BeginTxx(ctx, &sql.TxOptions{})
 	defer func() {
 		tx.Rollback()
@@ -542,6 +549,7 @@ func (d *Database) UpdateNote(ctx context.Context, in models.UpdateNoteInput) (*
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	d.Mu.Unlock()
 	return d.ViewNote(ctx, in.NoteID, models.GetNoteOptions{IncludeRevisions: false, IncludeAttachments: true})
 
 }
