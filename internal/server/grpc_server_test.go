@@ -20,25 +20,21 @@ import (
 
 const bufSize = 1024 * 1024
 
-// a simple mock store implementing Store
 type mockStore struct {
-	// you can add fields to control behavior per-test
 	createdNote *models.Note
-	// allow simulating errors
-	createErr error
-	viewErr   error
+	createErr   error
+	viewErr     error
 }
 
 func (m *mockStore) CreateNote(ctx context.Context, in models.CreateNoteInput) (*models.Note, error) {
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
-	// return a sample note that would be stored
 	now := time.Now()
 	n := &models.Note{
 		ID:        uuid.NewString(),
 		ProjectID: in.ProjectID,
-		AuthorID:  in.Author.ID, // adapt depending on your model types
+		AuthorID:  in.Author.ID,
 		Title:     in.Title,
 		Content:   in.Content,
 		IsPinned:  false,
@@ -88,7 +84,6 @@ func dialerWithServer(t *testing.T, s *grpc.Server) func(context.Context, string
 	l := bufconn.Listen(bufSize)
 	go func() {
 		if err := s.Serve(l); err != nil {
-			// Report error to test
 			t.Logf("server.Serve: %v", err)
 		}
 	}()
